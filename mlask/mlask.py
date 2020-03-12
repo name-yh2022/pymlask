@@ -2,6 +2,7 @@
 from __future__ import print_function
 from __future__ import unicode_literals
 import os
+import codecs
 import re
 import collections
 import pkgutil
@@ -48,7 +49,7 @@ RE_VALANCE_POS = re.compile('yasu|yorokobi|suki')
 RE_VALANCE_NEG = re.compile('iya|aware|ikari|kowa')
 RE_VALANCE_NEU = re.compile('takaburi|odoroki|haji')
 RE_ACTIVATION_A = re.compile('takaburi|odoroki|haji|ikari|kowa')
-RE_ACTIVATION_P = re.compile('yasu|aware')
+RE_ACTIVATION_D = re.compile('yasu|aware')
 RE_ACTIVATION_N = re.compile('iya|yorokobi|suki')
 
 
@@ -114,7 +115,7 @@ class MLAsk(object):
         >>> import mlask
         >>> ma = mlask.MLAsk()
         >>> ma.analyze('彼女のことが嫌いではない！(;´Д`)')
-        {'text': '彼女のことが嫌いではない！(;´Д`)', 'emotion': defaultdict(<class 'list'>, {'yorokobi': ['嫌い*CVS'], 'suki': ['嫌い*CVS']}), 'orientation': 'POSITIVE', 'activation': 'NEUTRAL', 'emoticon': ['(;´Д`)'], 'intension': 2, 'intensifier': {'exclamation': ['！'], 'emotikony': ['´Д`', 'Д`', '´Д', '(;´Д`)']}, 'representative': ('yorokobi', ['嫌い*CVS'])}
+        {'text': '彼女のことが嫌いではない！(;´Д`)', 'emotion': defaultdict(<class 'list'>, {'iya': ['嫌'], 'yorokobi': ['嫌い*CVS'], 'suki': ['嫌い*CVS']}), 'orientation': 'mostly_POSITIVE', 'activation': 'ACTIVE', 'emoticon': ['(;´Д`)'], 'intension': 2, 'intensifier': {'exclamation': ['！'], 'emotikony': ['´Д`', 'Д`', '´Д', '(;´Д`)']}, 'representative': ('yorokobi', ['嫌い*CVS'])}
         """
         # Normalizing
         text = self._normalize(text)
@@ -130,7 +131,7 @@ class MLAsk(object):
         intension = len(list(intensifier.values()))
 
         # Finding emotional words
-        emotions = self._find_emotion(lemmas)
+        emotions = self._find_emotion(lemmas['all'])
 
         # Estimating sentiment orientation {POSITIVE, NEUTRAL, NEGATIVE}
         orientation = self._estimate_sentiment_orientation(emotions)
@@ -141,19 +142,13 @@ class MLAsk(object):
         if emotions:
             result = {
                 'text': text,
-                'emotion': emotions,
-                'orientation': orientation,
-                'activation': activation,
-                'emoticon': emoticon if emoticon else None,
-                'intension': intension,
-                'intensifier': intensifier,
                 'representative': self._get_representative_emotion(emotions)
                 }
         else:
             result = {
                 'text': text,
                 'emotion': None
-            }
+                }
         return result
 
     def _normalize(self, text):
@@ -162,7 +157,7 @@ class MLAsk(object):
 
     def _lexical_analysis(self, text):
         """ By MeCab, doing lemmatisation and finding emotive indicator """
-        lemmas = {'all': '', 'interjections': [], 'no_emotem': [], 'lemma_words': []}
+        lemmas = {'all': [], 'interjections': [], 'no_emotem': []}
 
         if PY2:
             text = text.encode('utf8')
@@ -184,7 +179,7 @@ class MLAsk(object):
                 else:
                     (pos, subpos, lemma) = features[0], features[1], surface
                 if pos and subpos and lemma:
-                    lemmas['lemma_words'].append(lemma)
+                    lemmas['all'].append(lemma)
                     if RE_POS.search(pos + subpos) or RE_MIDAS.search(surface):
                         lemmas['interjections'].append(surface)
                     else:
@@ -192,7 +187,7 @@ class MLAsk(object):
             except UnicodeDecodeError:
                 pass
 
-        lemmas['all'] = ''.join(lemmas['lemma_words']).replace('*', '')
+        lemmas['all'] = ''.join(lemmas['all']).replace('*', '')
         lemmas['no_emotem'] = ''.join(lemmas['no_emotem'])
         return lemmas
 
@@ -224,21 +219,16 @@ class MLAsk(object):
                 emotemy[emotem_class] = found
         return emotemy
 
-    def _find_emotion(self, lemmas):
+    def _find_emotion(self, text):
         """ Finding emotion word by dictionaries """
-
-        # Build all sentences comprised of words from the text (max number of words = 7)
-        total_length = len(lemmas['lemma_words'])
-        sentences = [''.join(lemmas['lemma_words'][i:j+1]) for i in range(total_length) for j in range(i, i + 7 if i + 7 <= total_length else total_length)]
-        text_sentences = set(sentences)
         found_emotions = collections.defaultdict(list)
         for emotion_class, emotions in self.emodic['emotion'].items():
             for emotion in emotions:
-                if emotion not in text_sentences:
+                if emotion not in text:
                     continue
                 cvs_regex = re.compile('%s(?:%s(%s))' % (emotion, RE_PARTICLES, RE_CVS))
                 # if there is Contextual Valence Shifters
-                if cvs_regex.findall(lemmas['all']):
+                if cvs_regex.findall(text):
                     for new_emotion_class in CVS_TABLE[emotion_class]:
                         found_emotions[new_emotion_class].append(emotion + "*CVS")
                 else:
@@ -260,7 +250,7 @@ class MLAsk(object):
             else:
                 if num_negative > 0 and num_positive > 0:
                     orientation += 'mostly_'
-                orientation += 'POSITIVE' if num_positive > num_negative else 'NEGATIVE'
+                orientation +='POSITIVE' if num_positive > num_negative else 'NEGATIVE'
             return orientation
 
     def _estimate_activation(self, emotions):
@@ -269,8 +259,8 @@ class MLAsk(object):
         if emotions:
             how_many_activation = ''.join(emotions.keys())
             how_many_activation = RE_ACTIVATION_A.sub('A', how_many_activation)
-            how_many_activation = RE_ACTIVATION_P.sub('P', how_many_activation)
-            how_many_activation = RE_ACTIVATION_N.sub('N', how_many_activation)
+            how_many_activation = RE_ACTIVATION_D.sub('P', how_many_activation)
+            how_many_activation = RE_ACTIVATION_N.sub('NEUTRAL', how_many_activation)
             count_activation_A = how_many_activation.count('A')
             count_activation_P = how_many_activation.count('P')
 
